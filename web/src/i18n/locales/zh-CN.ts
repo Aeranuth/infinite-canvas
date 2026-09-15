@@ -489,6 +489,9 @@ export default {
             defaultName: "默认渠道",
             newName: "新渠道",
             indexedName: "渠道 {{index}}",
+            managed: "服务端托管",
+            managedDescription: "此渠道由服务端管理凭证，无需也不能在浏览器中填写或保存 API Key。",
+            managedKey: "由服务端管理",
         },
         preferences: {
             interface: "界面偏好",

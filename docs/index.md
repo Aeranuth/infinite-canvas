@@ -38,4 +38,4 @@
 ## Notes
 
 - Canvas projects and My Assets are primarily stored in the browser. WebDAV can be configured for cross-device synchronization.
-- The AI API key is stored in the browser, which sends requests directly to OpenAI-compatible endpoints.
+- Ordinary provider API keys are stored in the browser and requests go directly to the configured provider or through the general proxy. The Docker mobile-cloud Seedance integration is an exception: its upstream key stays in the local `canvas-sdk` service and requests use the same-origin `/sdk-api` route.

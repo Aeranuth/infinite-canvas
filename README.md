@@ -99,7 +99,9 @@
 
 ## 快速开始
 
-AI API Key、Base URL、画布、素材和生成记录默认保存在浏览器本地。
+普通渠道的 AI API Key、Base URL、画布、素材和生成记录默认保存在浏览器本地；这些渠道仍可在设置中手动填写自己的接口配置。
+
+移动云 Seedance 的 Docker 配置见 [Docker 部署文档](docs/content/docs/overview/docker.zh-CN.mdx)；Docker 快速配置只需复制 `.env.example` 为 `.env` 并填写 `MAAS_API_KEY`。
 
 ### 本地开发
 
@@ -116,12 +118,14 @@ bun run dev
 ```bash
 git clone git@github.com:basketikun/infinite-canvas.git
 cd infinite-canvas
-docker compose up -d
+cp .env.example .env
+# 编辑 .env，仅填写 MAAS_API_KEY
+docker compose up -d --build
 ```
 
-运行后默认端口3000，可访问 `http://localhost:3000`。
+默认使用当前源码构建本地镜像 `infinite-canvas:local`，运行后可访问 `http://localhost:3000`；端口仅绑定本机 `127.0.0.1`。
 
-首次打开后进入右上角配置，填入自己的 OpenAI 兼容 `Base URL` 和 `API Key`。
+首次打开后进入右上角配置，普通渠道可填入自己的 OpenAI 兼容 `Base URL` 和 `API Key`。
 
 如果默认的OpenAI接口调用方式与您的API不同，可自定义生图/视频脚本调用。
 

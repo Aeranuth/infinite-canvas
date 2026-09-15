@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.log
+aicc_log/
+jsc_log/
+seedance-keys/
+seedance-download-*/
+.git/

@@ -1,4 +1,4 @@
-import { App, Button, Form, Input, Modal, Progress, Select, Tabs } from "antd";
+import { App, Button, Form, Input, Modal, Progress, Select, Tabs, Tag } from "antd";
 import type { TFunction } from "i18next";
 import { Cloud, Download, Pencil, Plus, RefreshCw, Trash2, Upload, Wifi } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
@@ -14,7 +14,7 @@ import { exportAppConfig, importAppConfig } from "@/services/config-file";
 import { syncAppDataToWebdav, type AppSyncDomainKey, type AppSyncProgressEvent } from "@/services/app-sync";
 import { testWebdavConnection, WEBDAV_MANIFEST_FILE_NAME } from "@/services/webdav-sync";
 import { audioFormatOptions, audioVoiceOptions, normalizeAudioSpeedValue } from "@/lib/audio-generation";
-import { createModelChannel, modelOptionsFromChannels, normalizeModelOptionValue, selectableModelsByCapability, useConfigStore, type AiConfig, type ApiCallFormat, type ConfigTabKey, type ModelCapability, type ModelChannel } from "@/stores/use-config-store";
+import { createModelChannel, isAiConfigReady as isModelReady, isBuiltinSeedanceChannel, modelOptionsFromChannels, normalizeModelOptionValue, selectableModelsByCapability, useConfigStore, type AiConfig, type ApiCallFormat, type ConfigTabKey, type ModelCapability, type ModelChannel } from "@/stores/use-config-store";
 
 type ModelGroup = {
     capability: ModelCapability;
@@ -59,13 +59,14 @@ export function AppConfigPanel({ showDoneButton = false, initialTab = "channels"
     const [webdavDomainProgress, setWebdavDomainProgress] = useState(createWebdavDomainProgress);
     const config = useConfigStore((state) => state.config);
     const webdav = useConfigStore((state) => state.webdav);
+    const webdavReady = Boolean(webdav.url.trim());
+    const editingChannel = config.channels.find((channel) => channel.id === editingChannelId) || null;
     const updateConfig = useConfigStore((state) => state.updateConfig);
     const updateWebdavConfig = useConfigStore((state) => state.updateWebdavConfig);
+    const isAiConfigReady = useConfigStore((state) => state.isAiConfigReady);
     const shouldPromptContinue = useConfigStore((state) => state.shouldPromptContinue);
     const setConfigDialogOpen = useConfigStore((state) => state.setConfigDialogOpen);
     const clearPromptContinue = useConfigStore((state) => state.clearPromptContinue);
-    const webdavReady = Boolean(webdav.url.trim());
-    const editingChannel = config.channels.find((channel) => channel.id === editingChannelId) || null;
     const locale = i18n.resolvedLanguage as AppLocale;
     useEffect(() => setActiveTab(initialTab), [initialTab]);
 
@@ -74,13 +75,12 @@ export function AppConfigPanel({ showDoneButton = false, initialTab = "channels"
     };
 
     const finishConfig = () => {
-        const ready = config.channels.some((channel) => channel.baseUrl.trim() && channel.apiKey.trim() && channel.models.length);
+        const ready = [config.imageModel, config.videoModel, config.textModel, config.audioModel].some((model) => model && isAiConfigReady(config, model));
         setConfigDialogOpen(false);
         if (!ready) return;
         message.success(t(shouldPromptContinue ? "config.savedContinue" : "config.saved"));
         clearPromptContinue();
     };
-
     const loadConfigFile = async (file: File) => {
         try {
             await importAppConfig(file);
@@ -101,6 +101,8 @@ export function AppConfigPanel({ showDoneButton = false, initialTab = "channels"
     };
 
     const deleteChannel = (id: string) => {
+        const channel = config.channels.find((item) => item.id === id);
+        if (isBuiltinSeedanceChannel(channel)) return;
         if (config.channels.length <= 1) {
             message.warning(t("config.channels.keepOne"));
             return;
@@ -109,9 +111,9 @@ export function AppConfigPanel({ showDoneButton = false, initialTab = "channels"
     };
 
     const saveChannel = (channel: ModelChannel) => {
+        if (isBuiltinSeedanceChannel(channel)) return;
         updateChannels(config.channels.map((item) => (item.id === channel.id ? channel : item)));
     };
-
     const testWebdav = async () => {
         if (!webdavReady) {
             message.error(t("config.webdav.missingUrl"));
@@ -192,22 +194,29 @@ export function AppConfigPanel({ showDoneButton = false, initialTab = "channels"
                                     </Button>
                                 </div>
                                 <div className="space-y-2">
-                                    {config.channels.map((channel) => (
-                                        <div key={channel.id} className="flex items-center justify-between gap-3 rounded-lg border border-stone-200 px-4 py-3 dark:border-stone-800">
-                                            <div className="min-w-0">
-                                                <div className="truncate text-sm font-semibold">{channel.name || t("config.channels.unnamed")}</div>
-                                                <div className="mt-1 truncate text-xs text-stone-500">
-                                                    {apiFormatLabel(channel.apiFormat)} · {t("config.channels.modelCount", { count: channel.models.length })} · {channel.baseUrl || t("config.channels.missingUrl")}
+                                    {config.channels.map((channel) => {
+                                        const managed = isBuiltinSeedanceChannel(channel);
+                                        return (
+                                            <div key={channel.id} className="flex items-center justify-between gap-3 rounded-lg border border-stone-200 px-4 py-3 dark:border-stone-800">
+                                                <div className="min-w-0">
+                                                    <div className="flex items-center gap-2">
+                                                        <div className="truncate text-sm font-semibold">{channel.name || t("config.channels.unnamed")}</div>
+                                                        {managed ? <Tag color="blue">{t("config.channels.managed")}</Tag> : null}
+                                                    </div>
+                                                    <div className="mt-1 truncate text-xs text-stone-500">
+                                                        {apiFormatLabel(channel.apiFormat)} · {t("config.channels.modelCount", { count: channel.models.length })} · {channel.baseUrl || t("config.channels.missingUrl")}
+                                                    </div>
+                                                    {managed ? <div className="mt-1 text-xs text-stone-500">{t("config.channels.managedDescription")}</div> : null}
+                                                </div>
+                                                <div className="flex shrink-0 gap-2">
+                                                    <Button size="small" disabled={managed} icon={<Pencil className="size-3.5" />} onClick={() => setEditingChannelId(channel.id)}>
+                                                        {t("common.edit")}
+                                                    </Button>
+                                                    <Button size="small" danger disabled={managed} icon={<Trash2 className="size-3.5" />} onClick={() => deleteChannel(channel.id)} />
                                                 </div>
                                             </div>
-                                            <div className="flex shrink-0 gap-2">
-                                                <Button size="small" icon={<Pencil className="size-3.5" />} onClick={() => setEditingChannelId(channel.id)}>
-                                                    {t("common.edit")}
-                                                </Button>
-                                                <Button size="small" danger icon={<Trash2 className="size-3.5" />} onClick={() => deleteChannel(channel.id)} />
-                                            </div>
-                                        </div>
-                                    ))}
+                                        );
+                                    })}
                                 </div>
                             </div>
                         ),
@@ -383,7 +392,9 @@ function withChannels(config: AiConfig, channels: ModelChannel[]): AiConfig {
 function pickDefaultModel(config: AiConfig, capability: ModelCapability, current: string) {
     const options = selectableModelsByCapability(config, capability);
     const normalized = normalizeModelOptionValue(current, config.channels);
-    return options.includes(normalized) ? normalized : options[0] || "";
+    if (options.includes(normalized) && (capability !== "video" || isModelReady(config, normalized))) return normalized;
+    if (capability === "video") return options.find((value) => isModelReady(config, value)) || options[0] || "";
+    return options[0] || "";
 }
 
 function normalizeImageCount(value: string) {

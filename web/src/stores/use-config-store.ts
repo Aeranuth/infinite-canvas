@@ -4,6 +4,8 @@ import { persist } from "zustand/middleware";
 import { nanoid } from "nanoid";
 
 import i18n from "@/i18n";
+import { SEEDANCE_ENABLED, seedanceBaseUrl } from "@/constant/runtime-config";
+
 
 export type ApiCallFormat = "openai" | "gemini";
 export type ModelCapability = "image" | "video" | "text" | "audio";
@@ -56,6 +58,11 @@ export type AiConfig = {
     proxyUrl: string;
 };
 
+export type ModelRequestConfig = AiConfig & {
+    /** The encoded model's channel id, retained so managed channels cannot be inferred from an empty key. */
+    channelId?: string;
+};
+
 export type WebdavSyncConfig = {
     url: string;
     username: string;
@@ -74,6 +81,10 @@ export const CONFIG_STORE_KEY = "infinite-canvas:ai_config_store";
 const CHANNEL_MODEL_SEPARATOR = "::";
 const OPENAI_BASE_URL = "https://api.openai.com";
 const GEMINI_BASE_URL = "https://generativelanguage.googleapis.com";
+export const BUILTIN_SEEDANCE_CHANNEL_ID = "builtin-seedance";
+export const BUILTIN_SEEDANCE_MODEL = "doubao-seedance-2.0";
+export const BUILTIN_SEEDANCE_NAME = "移动云 Seedance";
+
 export const LOCAL_PROXY_PACKAGE = "@basketikun/canvas-proxy";
 export const DEFAULT_LOCAL_PROXY_URL = "http://127.0.0.1:23210";
 
@@ -130,6 +141,33 @@ export const defaultWebdavSyncConfig: WebdavSyncConfig = {
     directory: "infinite-canvas",
     lastSyncedAt: "",
 };
+export function createBuiltinSeedanceChannel(): ModelChannel {
+    return {
+        id: BUILTIN_SEEDANCE_CHANNEL_ID,
+        name: BUILTIN_SEEDANCE_NAME,
+        baseUrl: seedanceBaseUrl(),
+        apiKey: "",
+        apiFormat: "openai",
+        models: [{ name: BUILTIN_SEEDANCE_MODEL, capability: "video" }],
+    };
+}
+
+export function isBuiltinSeedanceChannel(channel: ModelChannel | null | undefined) {
+    const expectedBaseUrl = seedanceBaseUrl();
+    const model = channel?.models.length === 1 ? channel.models[0] : undefined;
+    return Boolean(
+        SEEDANCE_ENABLED &&
+            expectedBaseUrl &&
+            channel?.id === BUILTIN_SEEDANCE_CHANNEL_ID &&
+            channel.name === BUILTIN_SEEDANCE_NAME &&
+            channel.baseUrl.trim() === expectedBaseUrl &&
+            channel.apiKey === "" &&
+            channel.apiFormat === "openai" &&
+            model?.name === BUILTIN_SEEDANCE_MODEL &&
+            model.capability === "video" &&
+            !model.script,
+    );
+}
 
 type ConfigStore = {
     config: AiConfig;
@@ -166,7 +204,7 @@ export function guessCapability(name: string): ModelCapability {
 function findChannelModel(config: AiConfig, value: string): { channel: ModelChannel; model: ChannelModel } | null {
     const decoded = decodeChannelModel(value);
     const name = decoded?.model || value;
-    const channel = decoded ? config.channels.find((item) => item.id === decoded.channelId) : config.channels.find((item) => item.models.some((model) => model.name === name));
+    const channel = decoded ? config.channels.find((item) => item.id === decoded.channelId) : config.channels.find((item) => item.id !== BUILTIN_SEEDANCE_CHANNEL_ID && item.models.some((model) => model.name === name));
     const model = channel?.models.find((item) => item.name === name);
     return channel && model ? { channel, model } : null;
 }
@@ -198,30 +236,30 @@ export function resolveModelScript(config: AiConfig, value: string) {
     return findChannelModel(config, value)?.model.script?.trim() || "";
 }
 
-function isAiConfigReady(config: AiConfig, model: string) {
+export function isAiConfigReady(config: AiConfig, model: string) {
     const channel = resolveModelChannel(config, model);
-    return Boolean(model.trim() && channel.baseUrl.trim() && channel.apiKey.trim());
+    if (!model.trim() || !channel.baseUrl.trim()) return false;
+    return isBuiltinModelSelection(model, channel) || Boolean(channel.apiKey.trim());
 }
+
 
 export const useConfigStore = create<ConfigStore>()(
     persist(
         (set, get) => ({
-            config: defaultConfig,
+            config: normalizeAiConfig(defaultConfig),
             webdav: defaultWebdavSyncConfig,
             isConfigOpen: false,
             configTab: "channels",
             shouldPromptContinue: false,
             updateConfig: (key, value) =>
-                set((state) => ({
-                    config: {
-                        ...state.config,
-                        [key]: value,
-                    },
-                })),
+                set((state) => {
+                    const config = { ...state.config, [key]: value } as AiConfig;
+                    return { config: key === "channels" ? normalizeAiConfig(config) : config };
+                }),
             importChannelCredentials: (input) => {
                 const currentConfig = get().config;
                 const result = upsertChannelCredentials(currentConfig, input);
-                if (result.config !== currentConfig) set({ config: result.config });
+                if (result.config !== currentConfig) set({ config: normalizeAiConfig(result.config) });
                 return { status: result.status, channelName: result.channelName };
             },
             updateWebdavConfig: (key, value) =>
@@ -238,42 +276,15 @@ export const useConfigStore = create<ConfigStore>()(
         }),
         {
             name: CONFIG_STORE_KEY,
-            partialize: (state) => ({ config: state.config, webdav: state.webdav }),
+            partialize: (state) => ({ config: stripBuiltinSeedanceConfig(state.config), webdav: state.webdav }),
             merge: (persisted, current) => {
                 const persistedState = (persisted || {}) as Partial<ConfigStore>;
                 const persistedConfig = (persistedState.config || {}) as Partial<AiConfig>;
                 const persistedWebdav = (persistedState.webdav || {}) as Partial<WebdavSyncConfig>;
-                const config = { ...defaultConfig, ...persistedConfig };
-                if (!Array.isArray(persistedConfig.channels)) config.channels = [];
-                const channels = normalizeChannels(config);
-                const models = modelOptionsFromChannels(channels);
                 return {
                     ...current,
                     webdav: { ...defaultWebdavSyncConfig, ...persistedWebdav },
-                    config: {
-                        ...config,
-                        channelMode: "local",
-                        apiFormat: normalizeApiFormat(config.apiFormat),
-                        channels,
-                        models,
-                        imageModel: normalizeModelOptionValue(config.imageModel || config.model, channels),
-                        videoModel: normalizeModelOptionValue(config.videoModel, channels),
-                        textModel: normalizeModelOptionValue(config.textModel || config.model, channels),
-                        audioModel: normalizeModelOptionValue(config.audioModel || defaultConfig.audioModel, channels),
-                        audioVoice: config.audioVoice || defaultConfig.audioVoice,
-                        audioFormat: config.audioFormat || defaultConfig.audioFormat,
-                        audioSpeed: config.audioSpeed || defaultConfig.audioSpeed,
-                        audioInstructions: config.audioInstructions || "",
-                        reasoningEffort: config.reasoningEffort || "auto",
-                        videoSeconds: config.videoSeconds || "6",
-                        vquality: config.vquality || "720",
-                        videoGenerateAudio: config.videoGenerateAudio || "true",
-                        videoWatermark: config.videoWatermark || "false",
-                        videoMode: config.videoMode === "reference" ? "reference" : "frames",
-                        canvasImageCount: config.canvasImageCount || "3",
-                        proxyEnabled: Boolean(config.proxyEnabled),
-                        proxyUrl: config.proxyUrl || DEFAULT_LOCAL_PROXY_URL,
-                    },
+                    config: normalizeAiConfig(persistedConfig),
                 };
             },
         },
@@ -322,7 +333,9 @@ export function upsertChannelCredentials(
 
     const baseUrl = normalizeImportedBaseUrl(rawBaseUrl);
     const apiKey = input.apiKey?.trim() || "";
-    const matchingIndex = config.channels.findIndex((channel) => normalizedBaseUrlKey(channel.baseUrl) === normalizedBaseUrlKey(baseUrl));
+    const managedBaseUrl = seedanceBaseUrl();
+    if (SEEDANCE_ENABLED && managedBaseUrl && normalizedBaseUrlKey(baseUrl) === normalizedBaseUrlKey(managedBaseUrl)) return { status: "invalid-base-url", config };
+    const matchingIndex = config.channels.findIndex((channel) => channel.id !== BUILTIN_SEEDANCE_CHANNEL_ID && normalizedBaseUrlKey(channel.baseUrl) === normalizedBaseUrlKey(baseUrl));
 
     if (matchingIndex >= 0) {
         const existing = config.channels[matchingIndex];
@@ -420,23 +433,44 @@ export function normalizeModelOptionValue(value: string | undefined, channels: M
 export function resolveModelChannel(config: AiConfig, value: string) {
     const decoded = decodeChannelModel(value);
     const model = decoded?.model || value;
-    const matched = decoded ? config.channels.find((channel) => channel.id === decoded.channelId) : config.channels.find((channel) => channel.models.some((item) => item.name === model));
+    const matched = decoded ? config.channels.find((channel) => channel.id === decoded.channelId) : config.channels.find((channel) => channel.id !== BUILTIN_SEEDANCE_CHANNEL_ID && channel.models.some((item) => item.name === model));
     return matched || config.channels[0] || createModelChannel({ id: "default", name: i18n.t("config.channels.defaultName"), baseUrl: config.baseUrl, apiKey: config.apiKey, apiFormat: config.apiFormat, models: config.models.map(modelOptionName).map((name) => ({ name, capability: guessCapability(name) })) });
 }
 
-export function resolveModelRequestConfig(config: AiConfig, value: string) {
-    const channel = resolveModelChannel(config, value);
+export function resolveModelRequestConfig(config: AiConfig, value: string): ModelRequestConfig {
+    const selectedValue = (value || config.model || "").trim();
+    const decoded = decodeChannelModel(selectedValue);
+    const channel = resolveModelChannel(config, selectedValue);
     return {
         ...config,
-        model: modelOptionName(value || config.model),
+        model: modelOptionName(selectedValue),
         baseUrl: channel.baseUrl,
         apiKey: channel.apiKey,
         apiFormat: channel.apiFormat,
+        channelId: decoded?.channelId,
     };
 }
 
+export function isBuiltinSeedanceRequestConfig(config: Pick<ModelRequestConfig, "baseUrl" | "apiKey" | "apiFormat" | "channelId" | "model"> & Pick<AiConfig, "channels">) {
+    const channel = config.channels.find((item) => item.id === BUILTIN_SEEDANCE_CHANNEL_ID);
+    return Boolean(
+        SEEDANCE_ENABLED &&
+            config.channelId === BUILTIN_SEEDANCE_CHANNEL_ID &&
+            isBuiltinSeedanceChannel(channel) &&
+            config.baseUrl.trim() === seedanceBaseUrl() &&
+            config.apiKey === "" &&
+            config.apiFormat === "openai" &&
+            modelOptionName(config.model) === BUILTIN_SEEDANCE_MODEL,
+    );
+}
+
+function isBuiltinModelSelection(value: string, channel: ModelChannel) {
+    const decoded = decodeChannelModel(value);
+    return decoded?.channelId === BUILTIN_SEEDANCE_CHANNEL_ID && decoded.model === BUILTIN_SEEDANCE_MODEL && isBuiltinSeedanceChannel(channel);
+}
+
 function normalizeChannels(config: AiConfig) {
-    const persistedChannels = Array.isArray(config.channels) ? config.channels : [];
+    const persistedChannels = Array.isArray(config.channels) ? config.channels.filter((channel) => channel.id !== BUILTIN_SEEDANCE_CHANNEL_ID) : [];
     const channels = persistedChannels.map((channel, index) =>
         createModelChannel({
             ...channel,
@@ -446,18 +480,108 @@ function normalizeChannels(config: AiConfig) {
         }),
     );
     if (!channels.length) {
+        const managedBaseUrl = seedanceBaseUrl();
+        const legacyUsesManagedBase = Boolean(managedBaseUrl && config.baseUrl.trim() === managedBaseUrl);
+        const legacyModels = [config.model, config.imageModel, config.videoModel, config.textModel, config.audioModel].map(modelOptionName).filter((name) => name !== BUILTIN_SEEDANCE_MODEL);
         channels.push(
             createModelChannel({
                 id: "default",
                 name: i18n.t("config.channels.defaultName"),
-                baseUrl: config.baseUrl || defaultConfig.baseUrl,
-                apiKey: config.apiKey || "",
+                baseUrl: legacyUsesManagedBase ? defaultConfig.baseUrl : config.baseUrl || defaultConfig.baseUrl,
+                apiKey: legacyUsesManagedBase ? "" : config.apiKey || "",
                 apiFormat: config.apiFormat || defaultConfig.apiFormat,
-                models: normalizeChannelModels([config.model, config.imageModel, config.videoModel, config.textModel, config.audioModel].map(modelOptionName)),
+                models: normalizeChannelModels(legacyModels),
             }),
         );
     }
+    if (SEEDANCE_ENABLED) channels.push(createBuiltinSeedanceChannel());
     return channels;
+}
+
+export function normalizeAiConfig(input: Partial<AiConfig>): AiConfig {
+    const config = { ...defaultConfig, ...input } as AiConfig;
+    if (!Array.isArray(input.channels)) config.channels = [];
+    const channels = normalizeChannels(config);
+    const models = modelOptionsFromChannels(channels);
+    const imageModel = normalizeModelOptionValue(config.imageModel || config.model, channels);
+    const videoModel = selectConfiguredVideoModel(config, channels, normalizeModelOptionValue(config.videoModel, channels));
+    const textModel = normalizeModelOptionValue(config.textModel || config.model, channels);
+    const audioModel = normalizeModelOptionValue(config.audioModel || defaultConfig.audioModel, channels);
+    return {
+        ...config,
+        channelMode: "local",
+        baseUrl: config.baseUrl,
+        apiKey: config.apiKey,
+        apiFormat: normalizeApiFormat(config.apiFormat),
+        channels,
+        models,
+        model: isBuiltinChannelModelValue(config.model) ? imageModel || textModel || "" : config.model,
+        imageModel,
+        videoModel,
+        textModel,
+        audioModel,
+        audioVoice: config.audioVoice || defaultConfig.audioVoice,
+        audioFormat: config.audioFormat || defaultConfig.audioFormat,
+        audioSpeed: config.audioSpeed || defaultConfig.audioSpeed,
+        audioInstructions: config.audioInstructions || "",
+        reasoningEffort: config.reasoningEffort || "auto",
+        videoSeconds: config.videoSeconds || "6",
+        vquality: config.vquality || "720",
+        videoGenerateAudio: config.videoGenerateAudio || "true",
+        videoWatermark: config.videoWatermark || "false",
+        videoMode: config.videoMode === "reference" ? "reference" : "frames",
+        canvasImageCount: config.canvasImageCount || "3",
+        proxyEnabled: Boolean(config.proxyEnabled),
+        proxyUrl: config.proxyUrl || DEFAULT_LOCAL_PROXY_URL,
+    };
+}
+
+export function stripBuiltinSeedanceConfig(config: AiConfig): AiConfig {
+    const channels = config.channels.filter((channel) => channel.id !== BUILTIN_SEEDANCE_CHANNEL_ID);
+    const models = modelOptionsFromChannels(channels);
+    const cleanModel = (value: string, capability: ModelCapability) => {
+        if (isBuiltinChannelModelValue(value)) return capability === "video" ? value.trim() : "";
+        return normalizeModelOptionValue(value, channels);
+    };
+    const imageModel = cleanModel(config.imageModel, "image");
+    const videoModel = cleanModel(config.videoModel, "video");
+    const textModel = cleanModel(config.textModel, "text");
+    const audioModel = cleanModel(config.audioModel, "audio");
+    const primary = channels[0];
+    const managedBaseUrl = seedanceBaseUrl();
+    const usesManagedBase = Boolean(managedBaseUrl && config.baseUrl.trim() === managedBaseUrl);
+    return {
+        ...config,
+        baseUrl: usesManagedBase ? primary?.baseUrl || defaultConfig.baseUrl : config.baseUrl,
+        apiKey: usesManagedBase ? primary?.apiKey || "" : config.apiKey,
+        apiFormat: usesManagedBase ? primary?.apiFormat || defaultConfig.apiFormat : config.apiFormat,
+        channels,
+        models,
+        model: isBuiltinChannelModelValue(config.model) ? imageModel || textModel || "" : config.model,
+        imageModel,
+        videoModel,
+        textModel,
+        audioModel,
+    };
+}
+
+function isBuiltinChannelModelValue(value: string | undefined) {
+    return decodeChannelModel((value || "").trim())?.channelId === BUILTIN_SEEDANCE_CHANNEL_ID;
+}
+
+
+function selectConfiguredVideoModel(config: AiConfig, channels: ModelChannel[], current: string) {
+    const scopedConfig = { ...config, channels } as AiConfig;
+    if (isConfiguredModel(scopedConfig, current, "video")) return current;
+    const configured = modelOptionsFromChannels(channels).find((value) => isConfiguredModel(scopedConfig, value, "video"));
+    if (configured) return configured;
+    return SEEDANCE_ENABLED ? encodeChannelModel(BUILTIN_SEEDANCE_CHANNEL_ID, BUILTIN_SEEDANCE_MODEL) : current;
+}
+
+function isConfiguredModel(config: AiConfig, value: string, capability: ModelCapability) {
+    const match = findChannelModel(config, value);
+    if (!match || match.model.capability !== capability || !match.channel.baseUrl.trim()) return false;
+    return isBuiltinModelSelection(value, match.channel) || Boolean(match.channel.apiKey.trim());
 }
 
 export function defaultBaseUrlForApiFormat(apiFormat: ApiCallFormat) {

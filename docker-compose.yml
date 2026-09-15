@@ -1,11 +1,31 @@
 services:
   app:
-    image: ghcr.io/basketikun/infinite-canvas:latest
+    image: infinite-canvas:local
+    build:
+      context: .
+      dockerfile: Dockerfile
     container_name: infinite-canvas
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
     restart: unless-stopped
+    depends_on:
+      - canvas-sdk
+    environment:
+      SEEDANCE_ENABLED: "true"
     # 统计分析（可选，默认关闭）。每家一个独立变量，填了谁就启用谁，可同时启用多家：
-    # environment:
+    # 在上面的 environment 中按需添加：
     #   ANALYTICS_GA4_ID: G-XXXXXXXXXX                    # Google Analytics 4 衡量 ID
     #   ANALYTICS_BAIDU_ID: xxxxxxxxxxxxxxxxxxxxxxxxxxxx   # 百度统计站点 ID
+
+  canvas-sdk:
+    build:
+      context: ./canvas-sdk
+    environment:
+      MAAS_API_KEY: "${MAAS_API_KEY:-}"
+      DATA_DIR: /data
+    volumes:
+      - seedance-data:/data
+    restart: unless-stopped
+
+volumes:
+  seedance-data:

@@ -489,6 +489,9 @@ export default {
             defaultName: "Default provider",
             newName: "New provider",
             indexedName: "Provider {{index}}",
+            managed: "Server-managed",
+            managedDescription: "This provider is managed by the server. Credentials are not entered or stored in the browser.",
+            managedKey: "Managed by server",
         },
         preferences: {
             interface: "Interface",

@@ -5,39 +5,45 @@ description: Deploy Infinite Canvas with Docker Compose
 
 # Docker Deployment
 
-## Use the published image
+## Build and run locally
+
+From the repository root, create the environment file before starting Compose:
 
 ```bash
 git clone git@github.com:basketikun/infinite-canvas.git
 cd infinite-canvas
-docker compose up -d
+cp .env.example .env
 ```
 
-Open `http://localhost:3000`.
+Edit `.env` and fill in `MAAS_API_KEY` only. The mobile-cloud Seedance upstream and model are built in:
 
-## Build locally
+- Upstream: `https://zhenze-huhehaote.cmecloud.cn/api/v3`
+- Model: `doubao-seedance-2.0`
+
+Do not enter a Base URL or model for this built-in channel. Then build and start the default two-service Compose deployment:
 
 ```bash
-docker compose -f docker-compose.local.yml up -d --build
+docker compose up -d --build
 ```
+
+The `app` service serves the Vite static frontend through Nginx on container port `3000` and proxies the same-origin `/sdk-api` path to `canvas-sdk`. The SDK service has no published host port. Compose sets `SEEDANCE_ENABLED=true` on `app`; the built-in channel is added as read-only, and `doubao-seedance-2.0` is supplied as its default only when no usable video model is already selected. The upstream key stays in the SDK service rather than being sent to the browser. Ordinary channels continue to use their browser-stored credentials and direct or general-proxy requests.
+
+| Service | Role | Host exposure |
+| --- | --- | --- |
+| `app` | Vite static frontend and same-origin `/sdk-api` reverse proxy | `127.0.0.1:3000:3000` |
+| `canvas-sdk` | Mobile-cloud Seedance gateway adapter | No published port |
+
+Open `http://localhost:3000`. The default host binding is `127.0.0.1:3000`; if that host port is occupied, change only the host-side port (for example, `127.0.0.1:13000:3000`) and open the matching local URL. The frontend derives its SDK base URL from `location.origin + "/sdk-api"` automatically.
+
+The SDK stores its RSA key material in the named `seedance-data` volume under `/data/seedance-keys`. Keep this volume across restarts and upgrades: do not run `docker compose down -v`, or historical encrypted videos may no longer be decryptable. Temporary video files are removed after the response; canvases, assets, and generation records remain local to the browser and are not cloud-synchronized.
+
+This integration is intended for local, single-user access. Do not expose the SDK through a public port or reverse proxy: the local Host check is the boundary, and there is no multi-user authentication. The `X-Canvas-SDK: 1` header helps protect the route from CSRF simple requests; it is not user authentication or authorization. Each complete generation request, including multipart media, is limited to 100 MiB; oversized requests receive `413` and are not compressed automatically. Provider limits on media size, duration, and resolution still apply.
+
+The `SEEDANCE_ENABLED` runtime flag is required for injection. A pure static deployment or local Vite dev server without that runtime configuration does not inject the built-in channel.
 
 ## Documentation image
 
 The documentation in `docs/` is a separate Next.js standalone application with server capabilities.
-
-```bash
-cd docs
-docker compose up -d
-```
-
-To build it from the current source:
-
-```bash
-cd docs
-docker compose -f docker-compose.local.yml up -d --build
-```
-
-The main application container only runs Next.js. Canvases, My Assets, generation history, and API keys are stored in the browser by default, while prompt repositories are fetched directly by the frontend. No persistent data volume is required for this data.
 
 ## Optional analytics
 

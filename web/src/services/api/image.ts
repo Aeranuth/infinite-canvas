@@ -1,7 +1,7 @@
 import axios from "axios";
 
 import i18n from "@/i18n";
-import { buildApiUrl, resolveModelRequestConfig, resolveModelScript, withLocalProxy, type AiConfig, type ModelChannel } from "@/stores/use-config-store";
+import { BUILTIN_SEEDANCE_CHANNEL_ID, buildApiUrl, isBuiltinSeedanceChannel, resolveModelRequestConfig, resolveModelScript, withLocalProxy, type AiConfig, type ModelChannel } from "@/stores/use-config-store";
 import { normalizePluginImages, runModelPlugin } from "./model-plugin";
 import { nanoid } from "nanoid";
 import { dataUrlToFile } from "@/lib/image-utils";
@@ -909,7 +909,18 @@ export async function fetchImageModels(config: Pick<AiConfig, "baseUrl" | "apiKe
 }
 
 export async function fetchChannelModels(channel: ModelChannel) {
-    return fetchImageModels({ baseUrl: channel.baseUrl, apiKey: channel.apiKey, apiFormat: channel.apiFormat });
+    if (channel.id === BUILTIN_SEEDANCE_CHANNEL_ID && !isBuiltinSeedanceChannel(channel)) throw new Error(apiText("modelReadFailed"));
+    if (!isBuiltinSeedanceChannel(channel)) return fetchImageModels({ baseUrl: channel.baseUrl, apiKey: channel.apiKey, apiFormat: channel.apiFormat });
+    try {
+        const baseUrl = channel.baseUrl.trim().replace(/\/+$/, "");
+        const response = await axios.get<{ data?: Array<{ id?: string }>; error?: { message?: string } }>(`${baseUrl}/v1/models`, { headers: { "X-Canvas-SDK": "1" } });
+        return (response.data.data || [])
+            .map((model) => model.id)
+            .filter((id): id is string => Boolean(id))
+            .sort((a, b) => a.localeCompare(b));
+    } catch (error) {
+        throw new Error(readAxiosError(error, apiText("modelReadFailed")));
+    }
 }
 
 const defaultGeminiConfig: Pick<AiConfig, "baseUrl" | "apiKey" | "apiFormat" | "model" | "systemPrompt"> = {

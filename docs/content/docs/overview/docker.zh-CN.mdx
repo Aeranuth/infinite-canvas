@@ -7,27 +7,41 @@ description: 使用 Docker Compose 部署无限画布
 
 如果你希望在自己的机器或服务器上运行项目，可以直接使用 Docker Compose。
 
-## 使用发布镜像
+## 本地构建并运行
+
+在仓库根目录先创建环境文件：
 
 ```bash
 git clone git@github.com:basketikun/infinite-canvas.git
 cd infinite-canvas
-docker compose up -d
+cp .env.example .env
 ```
 
-启动后访问：
+编辑 `.env`，只填写 `MAAS_API_KEY`。移动云 Seedance 的上游地址和模型已内置：
 
-```text
-http://localhost:3000
-```
+- 上游地址：`https://zhenze-huhehaote.cmecloud.cn/api/v3`
+- 模型：`doubao-seedance-2.0`
 
-## 本地构建镜像
-
-如果需要基于当前源码构建镜像：
+内置渠道无需填写 Base URL 或模型。然后启动默认的两个服务：
 
 ```bash
-docker compose -f docker-compose.local.yml up -d --build
+docker compose up -d --build
 ```
+
+Compose 中的 `app` 服务使用 Nginx 托管 Vite 静态前端，容器端口为 `3000`，并将同源的 `/sdk-api` 转发到 `canvas-sdk`；SDK 服务不发布宿主机端口。`app` 的运行期配置为 `SEEDANCE_ENABLED=true`，启动后会自动注入只读的移动云渠道；仅当没有可用的视频模型时，才为该渠道提供默认模型 `doubao-seedance-2.0`，不会覆盖已有的有效选择。上游 Key 只留在 SDK 服务端，不会下发到浏览器；普通渠道仍使用浏览器本地 Key，并按原有方式直连或经通用代理请求。
+
+| 服务 | 作用 | 宿主机暴露 |
+| --- | --- | --- |
+| `app` | Vite 静态前端与同源 `/sdk-api` 反向代理 | `127.0.0.1:3000:3000` |
+| `canvas-sdk` | 移动云 Seedance 网关适配服务 | 不发布端口 |
+
+启动后访问 `http://localhost:3000`。默认只绑定本机 `127.0.0.1:3000`；如果宿主机 3000 端口被占用，只修改宿主机一侧的端口（例如 `127.0.0.1:13000:3000`），再访问对应的本机地址即可，前端会自动根据 `location.origin + "/sdk-api"` 生成 SDK baseURL。
+
+SDK 会将 RSA 密钥材料持久化到命名卷 `seedance-data` 的 `/data/seedance-keys`。重启或升级时必须保留此卷；不要执行 `docker compose down -v`，否则历史加密视频可能无法解密。视频临时文件在响应后清理，最终画布、素材和生成记录仍保存在浏览器本地，不会自动云同步。
+
+该集成仅面向本机单用户使用。不要发布 SDK 端口或通过公网反向代理开放：安全边界是本机 Host 检查，不提供多用户鉴权；`X-Canvas-SDK: 1` 用于防护 CSRF 简单请求，不是用户鉴权或授权。每次完整生成请求（包括 multipart 媒体）最大 100 MiB，超出返回中文 `413`，不会自动压缩；供应商对媒体尺寸、时长和分辨率的限制仍然有效。
+
+只有带有 `SEEDANCE_ENABLED` 运行期配置时才会注入内置渠道；纯静态部署或未注入该配置的本地 Vite 开发服务不会注入。
 
 ## 文档站镜像
 
@@ -49,7 +63,7 @@ docker compose -f docker-compose.local.yml up -d --build
 
 ## 数据说明
 
-当前主应用镜像只启动 Next.js。画布、我的素材、生成记录和 AI API Key 默认保存在浏览器本地；第三方提示词由浏览器前端直连拉取，不需要额外挂载数据目录。
+主应用镜像现在是 Vite 静态前端加 Nginx，并由同源路径连接 SDK；画布、我的素材和生成记录默认保存在浏览器本地。`MAAS_API_KEY` 通过 Compose 环境变量提供给 SDK，RSA 密钥材料才持久化在 `seedance-data` 卷中。
 
 ## 统计分析（可选）
 

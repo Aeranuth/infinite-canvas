@@ -31,6 +31,14 @@ Please include:
 
 ## Scope
 
+### Docker mobile-cloud Seedance SDK
+
+The optional Docker Compose deployment includes a local `canvas-sdk` service for the paid mobile-cloud Seedance gateway. Its `MAAS_API_KEY` remains in the SDK service and is not sent to the browser. The app reaches it through the same-origin `/sdk-api` route.
+
+This is a local, single-user boundary, not a public service: the SDK port is not published by the default Compose file, and the local Host check is the relevant boundary. The `X-Canvas-SDK: 1` header helps protect the route from CSRF simple requests; it is not user authentication or authorization. Do not expose this route through a public reverse proxy without adding an authentication design.
+
+This server-side key handling applies only to the built-in Seedance integration. Ordinary provider channels continue to store their configured API keys in browser storage and call the configured provider directly or through the general proxy.
+
 ### Canvas node plugins
 
 The canvas supports third-party node plugins loaded from a remote URL. By

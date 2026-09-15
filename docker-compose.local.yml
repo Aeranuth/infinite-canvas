@@ -5,5 +5,22 @@ services:
       context: .
       dockerfile: Dockerfile
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
     restart: unless-stopped
+    depends_on:
+      - canvas-sdk
+    environment:
+      SEEDANCE_ENABLED: "true"
+
+  canvas-sdk:
+    build:
+      context: ./canvas-sdk
+    environment:
+      MAAS_API_KEY: "${MAAS_API_KEY:-}"
+      DATA_DIR: /data
+    volumes:
+      - seedance-data:/data
+    restart: unless-stopped
+
+volumes:
+  seedance-data:

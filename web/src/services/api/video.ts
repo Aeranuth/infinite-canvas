@@ -6,7 +6,7 @@ import { dataUrlToFile, readFileAsDataUrl } from "@/lib/image-utils";
 import { clampVideoSeconds, computeVideoSize, inferVideoRatio } from "@/lib/media-size";
 import { getMediaBlob, resolveMediaUrl, uploadMediaFile, type UploadedFile } from "@/services/file-storage";
 import { imageToDataUrl } from "@/services/image-storage";
-import { boolConfig, buildApiUrl, modelOptionName, resolveModelRequestConfig, resolveModelScript, withLocalProxy, type AiConfig } from "@/stores/use-config-store";
+import { BUILTIN_SEEDANCE_CHANNEL_ID, boolConfig, buildApiUrl, isBuiltinSeedanceRequestConfig, modelOptionName, resolveModelRequestConfig, resolveModelScript, withLocalProxy, type AiConfig, type ModelRequestConfig } from "@/stores/use-config-store";
 import { runModelPlugin } from "./model-plugin";
 import type { ReferenceImage } from "@/types/image";
 import type { ReferenceAudio, ReferenceVideo } from "@/types/media";
@@ -32,11 +32,22 @@ export type VideoGenerationTaskState = { status: "pending" } | { status: "comple
 /** Results for scripted (plugin) video models, which run their own create+poll in one shot at task creation. */
 const pluginVideoResults = new Map<string, VideoGenerationResult>();
 
-function aiApiUrl(config: AiConfig, path: string) {
+function aiApiUrl(config: ModelRequestConfig, path: string) {
+    if (isBuiltinSeedanceRequestConfig(config)) {
+        const baseUrl = config.baseUrl.trim().replace(/\/+$/, "");
+        const apiBaseUrl = baseUrl.toLowerCase().endsWith("/v1") ? baseUrl : `${baseUrl}/v1`;
+        return `${apiBaseUrl}${path}`;
+    }
     return buildApiUrl(config.baseUrl, path);
 }
 
-function aiHeaders(config: AiConfig, contentType?: string) {
+function aiHeaders(config: ModelRequestConfig, contentType?: string) {
+    if (isBuiltinSeedanceRequestConfig(config)) {
+        return {
+            "X-Canvas-SDK": "1",
+            ...(contentType ? { "Content-Type": contentType } : {}),
+        };
+    }
     return {
         Authorization: `Bearer ${config.apiKey}`,
         ...(contentType ? { "Content-Type": contentType } : {}),
@@ -146,7 +157,7 @@ export async function storeGeneratedVideo(result: VideoGenerationResult): Promis
     throw new Error(apiText("noPlayableVideo"));
 }
 
-async function createOpenAIVideoTask(config: AiConfig, model: string, prompt: string, references: ReferenceImage[], options?: VideoMediaOptions): Promise<VideoGenerationTask> {
+async function createOpenAIVideoTask(config: ModelRequestConfig, model: string, prompt: string, references: ReferenceImage[], options?: VideoMediaOptions): Promise<VideoGenerationTask> {
     const images = await Promise.all(references.map(async (image) => dataUrlToFile({ ...image, dataUrl: await imageToDataUrl(image) })));
     const videos = await Promise.all((options?.videos || []).map((video) => referenceMediaToFile(video, "ref.mp4", "invalidReferenceVideo", options)));
     const audios = await Promise.all((options?.audios || []).map((audio) => referenceMediaToFile(audio, "ref.mp3", "invalidReferenceAudio", options)));
@@ -173,15 +184,15 @@ async function createOpenAIVideoTask(config: AiConfig, model: string, prompt: st
         if (!created.id) throw new Error(apiText("noVideoTaskId"));
         return { id: created.id, provider: "openai", model };
     } catch (error) {
-        throw new Error(readAxiosError(error, apiText("videoTaskCreateFailed")));
+        throw new Error(await readAxiosError(error, apiText("videoTaskCreateFailed")));
     }
 }
 
-async function pollOpenAIVideoTask(config: AiConfig, task: VideoGenerationTask, options?: RequestOptions): Promise<VideoGenerationTaskState> {
+async function pollOpenAIVideoTask(config: ModelRequestConfig, task: VideoGenerationTask, options?: RequestOptions): Promise<VideoGenerationTaskState> {
     try {
         const video = unwrapVideoResponse((await axios.get<ApiVideoResponse>(aiApiUrl(config, `/videos/${task.id}`), { headers: aiHeaders(config), signal: options?.signal })).data);
         const url = videoResultUrl(video);
-        if (url) return { status: "completed", result: await videoResultFromUrl(url, options) };
+        if (url) return { status: "completed", result: await videoResultFromUrl(url, options, config) };
         if (video.status === "completed") {
             const content = await axios.get<Blob>(aiApiUrl(config, `/videos/${task.id}/content`), { headers: aiHeaders(config), responseType: "blob", signal: options?.signal });
             await assertVideoBlob(content.data);
@@ -190,13 +201,14 @@ async function pollOpenAIVideoTask(config: AiConfig, task: VideoGenerationTask, 
         if (video.status === "failed" || video.status === "cancelled") return { status: "failed", error: readApiErrorMessage(video.error?.message) || apiText("videoGenerationFailed") };
         return { status: "pending" };
     } catch (error) {
-        throw new Error(readAxiosError(error, apiText("videoTaskQueryFailed")));
+        throw new Error(await readAxiosError(error, apiText("videoTaskQueryFailed")));
     }
 }
 
-async function videoResultFromUrl(url: string, options?: RequestOptions): Promise<VideoGenerationResult> {
+async function videoResultFromUrl(url: string, options?: RequestOptions, config?: ModelRequestConfig): Promise<VideoGenerationResult> {
     try {
-        const response = await axios.get<Blob>(withLocalProxy(url), { responseType: "blob", signal: options?.signal });
+        const requestUrl = config && isBuiltinSeedanceRequestConfig(config) ? url : withLocalProxy(url);
+        const response = await axios.get<Blob>(requestUrl, { responseType: "blob", signal: options?.signal });
         await assertVideoBlob(response.data);
         return { blob: response.data };
     } catch (error) {
@@ -233,7 +245,7 @@ async function createGeminiVideoTask(config: AiConfig, model: string, prompt: st
         if (!created.name) throw new Error(apiText("noVideoTaskId"));
         return { id: created.name, provider: "gemini", model };
     } catch (error) {
-        throw new Error(readAxiosError(error, apiText("videoTaskCreateFailed")));
+        throw new Error(await readAxiosError(error, apiText("videoTaskCreateFailed")));
     }
 }
 
@@ -247,13 +259,16 @@ async function pollGeminiVideoTask(config: AiConfig, task: VideoGenerationTask, 
         const url = uri.includes("key=") ? uri : `${uri}${uri.includes("?") ? "&" : "?"}key=${config.apiKey}`;
         return { status: "completed", result: await videoResultFromUrl(url, options) };
     } catch (error) {
-        throw new Error(readAxiosError(error, apiText("videoTaskQueryFailed")));
+        throw new Error(await readAxiosError(error, apiText("videoTaskQueryFailed")));
     }
 }
 
-function assertVideoConfig(config: AiConfig, model: string) {
+function assertVideoConfig(config: ModelRequestConfig, model: string) {
     if (!model) throw new Error(apiText("videoModelRequired"));
+    const builtin = isBuiltinSeedanceRequestConfig({ ...config, model });
+    if (config.channelId === BUILTIN_SEEDANCE_CHANNEL_ID && !builtin) throw new Error(apiText("apiKeyRequired"));
     if (!config.baseUrl.trim()) throw new Error(apiText("baseUrlRequired"));
+    if (builtin) return;
     if (!config.apiKey.trim()) throw new Error(apiText("apiKeyRequired"));
 }
 
@@ -376,12 +391,20 @@ function readApiErrorMessage(value: unknown): string {
     );
 }
 
-function readAxiosError(error: unknown, fallback: string) {
+async function readAxiosError(error: unknown, fallback: string) {
     if (axios.isCancel(error)) return apiText("requestCanceled");
     if (axios.isAxiosError<{ error?: { message?: string }; msg?: string; message?: string; code?: number | string }>(error)) {
         if (!error.response && error.code === "ERR_NETWORK") return apiText("requestFailed");
         const responseData = error.response?.data;
-        return readApiErrorMessage(responseData) || statusMessage(error.response?.status, fallback);
+        let message = "";
+        if (typeof Blob !== "undefined" && responseData instanceof Blob) {
+            try {
+                message = readApiErrorMessage(await responseData.text());
+            } catch {
+                message = "";
+            }
+        }
+        return message || readApiErrorMessage(responseData) || statusMessage(error.response?.status, fallback);
     }
     if (error instanceof DOMException && error.name === "AbortError") return apiText("requestCanceled");
     return error instanceof Error ? readApiErrorMessage(error.message) || error.message : fallback;
