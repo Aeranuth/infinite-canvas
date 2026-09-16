@@ -2,6 +2,10 @@
 
 ## Unreleased
 
++ [调整] 本地代理日志额外显示重定向后的最终地址及最终响应的 X-Request-ID，便于定位视频下载失败。
++ [修复] 视频任务与 OpenAI 调用脚本模板支持读取 metadata.url，避免已完成任务误请求 content 接口而返回 404。
++ [新增] Docker Compose 支持从当前源码构建独立本地代理服务，仅向宿主机回环地址开放。
++ [修复] 本地代理跟随视频 content 重定向时保留相同 Authorization，避免跨域下载丢失鉴权。
 + [调整] 主应用 Docker Compose 默认从当前源码构建并运行本地镜像，不再使用远端发布镜像。
 + [调整] Docker 构建依赖时使用 npmmirror 源，按锁文件执行无缓存安装并保留完整性校验。
 

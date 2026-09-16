@@ -69,24 +69,43 @@ function sendJson(res, status, payload) {
     res.end(JSON.stringify(payload));
 }
 
-function logForward(method, target, outcome, startedAt) {
-    console.log(`${new Date().toLocaleTimeString()} ${method} ${target} -> ${outcome} ${((Date.now() - startedAt) / 1000).toFixed(1)}s`);
+function logForward(method, target, outcome, startedAt, requestId) {
+    console.log(`${new Date().toLocaleTimeString()} ${method} ${target} -> ${outcome} ${((Date.now() - startedAt) / 1000).toFixed(1)}s${requestId ? ` X-Request-ID=${requestId}` : ""}`);
+}
+
+async function fetchVideoContent(target, headers) {
+    for (let redirects = 0; ; redirects++) {
+        const response = await fetch(target, { headers, redirect: "manual" });
+        const location = response.headers.get("location");
+        if (![301, 302, 303, 307, 308].includes(response.status) || !location) return response;
+        await response.body?.cancel();
+        // Keep fetch's existing 20-redirect limit while retaining Authorization across origins.
+        if (redirects === 20) throw new Error("redirect count exceeded");
+        target = new URL(location, target).href;
+    }
 }
 
 async function forward(req, res, target) {
     const body = req.method === "GET" || req.method === "HEAD" ? undefined : await readBody(req);
-    const upstream = await fetch(target, { method: req.method, headers: requestHeaders(req), body, redirect: "follow" });
+    const headers = requestHeaders(req);
+    const videoContent = req.method === "GET" && /\/videos\/[^/]+\/content\/?$/.test(new URL(target).pathname);
+    const upstream = videoContent
+        ? await fetchVideoContent(target, headers)
+        : await fetch(target, { method: req.method, headers, body, redirect: "follow" });
+    if (upstream.url && upstream.url !== new URL(target).href) {
+        console.log(`${new Date().toLocaleTimeString()} ${req.method} redirect ${target} -> ${upstream.url}`);
+    }
     // Logged as soon as the status line arrives, so a long SSE stream still shows up immediately.
     res.writeHead(upstream.status, responseHeaders(upstream));
     if (!upstream.body) {
         res.end();
-        return upstream.status;
+        return upstream;
     }
     // Streamed so that SSE responses (text generation) reach the browser chunk by chunk.
     const stream = Readable.fromWeb(upstream.body);
     res.on("close", () => stream.destroy());
     stream.pipe(res);
-    return upstream.status;
+    return upstream;
 }
 
 export function createProxyServer() {
@@ -104,7 +123,7 @@ export function createProxyServer() {
         const startedAt = Date.now();
         const method = req.method || "GET";
         forward(req, res, target)
-            .then((status) => logForward(method, target, status, startedAt))
+            .then((upstream) => logForward(method, target, upstream.status, startedAt, upstream.headers.get("x-request-id")))
             .catch((error) => {
                 const reason = error instanceof Error ? error.message : String(error);
                 logForward(method, target, `failed (${reason})`, startedAt);

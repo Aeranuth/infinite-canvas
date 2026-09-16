@@ -525,8 +525,9 @@ async function generateVideo({
       if (state.status === "failed" || state.status === "cancelled") {
         throw new Error(state.error && state.error.message ? state.error.message : "video generation failed");
       }
-      if (state.video_url || state.url) {
-        return { url: state.video_url || state.url };
+      const url = state.video_url || state.url || state.metadata?.url;
+      if (url) {
+        return { url };
       }
       if (state.status === "completed") {
         return await request({

@@ -27,5 +27,12 @@ services:
       - seedance-data:/data
     restart: unless-stopped
 
+  canvas-proxy:
+    build:
+      context: ./canvas-proxy
+    ports:
+      - "127.0.0.1:23210:23210"
+    restart: unless-stopped
+
 volumes:
   seedance-data:
